@@ -207,45 +207,30 @@ Function Validate-GraphInfo
     {
         out-logfile -string "Specifying a certificate thumbprint and client secret is not allowed - specify one authentication method." -isError:$true
     }
-    elseif ($msGraphClientSecret -ne "")
+    elseif ((($msGraphCertificateThumbprint -ne "") -or ($msGraphClientSecret -ne "")) -and ($msGraphApplicationID -eq ""))
     {
-        out-logfile -string "Client secret specified - set type client secret auth."
-
-        $functionConnectionType = $functionConnectionTypeSecret
+        out-logfile -string "Specifying a client secret or certificate thumbprint without application ID is not allowed - specify an application ID." -isError:$true
     }
     elseif ($msGraphApplicationID -ne "")
     {
-        out-logfile -string "Application ID specified - check certificate thumbprint."
+        out-logfile -string "Application ID specified - check for certificate or client secret authentication."
 
         if ($msGraphCertificateThumbprint -ne "")
         {
-            out-logfile -string "Application ID specified - certificate thumbprint specified - set type certificate auth."
+            out-logfile -string "Application ID specifeid - certificate thumbprint specified - set type certificate auth."
 
             $functionConnectionType = $functionConnectionTypeCertificate
         }
-        else 
+        elseif ($msGraphClientSecret -ne "")
         {
-            out-logfile -string "Specifying a graph application ID requires a certificate thumbprint - specify a certificate thumbprint." -isError:$TRUE
-        }
-    }
-    elseif ($msGraphCertificateThumbprint -ne "")
-    {
-        out-logfile -string "Certificate thumbprint specified - check application ID."
+            out-logfile -string "Application ID specifeid - client secret specified - set type client secret auth."
 
-        if ($msGraphApplicationID -ne "")
-        {
-            out-logfile -string "Application ID specified - certificate thumbprint specified - set type certificate auth."
-
-            $functionConnectionType = $functionConnectionTypeCertificate
+            $functionConnectionType = $functionConnectionTypeSecret
         }
         else 
         {
-            out-logfile -string "Specifying a certificate thumbprint requires a graph application ID - specify a graph application ID." -isError:$TRUE
+            out-logfile -string "Specifying an application ID without certificate thumbprint or client secret is not allowed - specify a certificate thumbprint or client secret." -isError:$true
         }
-    }
-    else 
-    {
-        out-logfile -string "Graph authentication type could not be determined - this is not good - you should not have gotten here." -isError:$true
     }
 
     out-logfile -string "Exit Validate-GraphInfo"
@@ -332,6 +317,64 @@ Function Connect-MicrosoftGraph
     {
         out-logfile -string "This is bad - you should not have been able to end up here." -isError:$TRUE
     }
+
+    out-logfile -string "Exiting Connect-MicrosoftGraph"
+}
+
+#*****************************************************
+Function Validate-GraphScopes 
+{
+    out-logfile -string "Entering Validate-GraphScopes"
+
+    #Define local variables.
+
+    $graphScopesRequired = @("GroupMember.Read.All","Group.ReadWrite.All","Directory.Read.All","Directory.ReadWrite.All","Group.Read.All")
+    $graphContext = $NULL
+    $validGraphScope = ""
+
+    out-logfile -string "Exiting Validate-GraphScopes"
+
+    out-logfile -string "Obtaining graph context."
+
+    $graphContext = Get-MgContext
+
+    out-logfile -string "The following scopes are assigned to the authentication context:"
+
+    foreach ($scope in $graphContext.scopes)
+    {
+        out-logfile -string $scope
+    }
+
+    out-logfile -string "Searching scopes to ensure a minimum scope is present."
+
+    for ($i = 0 ; $i -lt $graphContext.Scopes.Count ; $i++)
+    {
+        out-logfile -string $graphContext.scopes[$i]
+
+        if ($graphScopesRequired.Contains($graphContext.scopes[$i]))
+        {
+            out-logfile -string "Minium graph scope found - proceed."
+            $validGraphScope = $graphContext.scopes[$i]
+            $i = $graphContext.Scopes.Count+1
+        }
+        else 
+        {
+            out-logfile -string "Not a minimum graph scope."
+        }
+    }
+
+    if ($validGraphScope -eq "")
+    {
+        out-logfile -string "A valid graph scope for continuing was not found in the authentication context."
+        out-logfile -string "The user or application must have one of the following scopes:"
+
+        foreach ($scope in $graphScopesRequired)
+        {
+            out-logfile -string $scope
+        }
+
+        out-logfile -string "ERROR: Correct graph scopes!"
+    }
 }
 
 #*****************************************************
@@ -361,3 +404,7 @@ out-logfile -string ("Graph authentication type: "+$graphConnectionType)
 out-logfile -string "Initiating connection to Microsoft Graph."
 
 Connect-MicrosoftGraph -msGraphEnvironmentName $msGraphEnvironmentName -msGraphTenantID $msGraphTenantID -msGraphApplicationID $msGraphApplicationID -msGraphCertificateThumbprint $msGraphCertificateThumbprint -msGraphClientSecret $msGraphClientSecret -graphAuthenticationType $graphConnectionType -errorAction STOP
+
+out-logfile -string "Validating necessary graph scopes post connection."
+
+Validate-GraphScopes
