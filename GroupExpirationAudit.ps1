@@ -43,6 +43,22 @@ Micorosft CSS
  This script audits group expiration and provides output information 
 
 #> 
-Param()
+Param(
+    #Define Microsoft Graph Parameters
+        [Parameter(Mandatory = $false)]
+        [ValidateSet("China","Global","USGov","USGovDod")]
+        [string]$msGraphEnvironmentName="Global",
+        [Parameter(Mandatory=$true)]
+        [string]$msGraphTenantID="",
+        [Parameter(Mandatory=$false)]
+        [string]$msGraphApplicationID="",
+        [Parameter(Mandatory=$false)]
+        [string]$msGraphCertificateThumbprint="",
+        [Parameter(Mandatory=$false)]
+        [string]$msGraphClientSecret,
+        #Define other mandatory parameters
+        [Parameter(Mandatory = $true)]
+        [string]$logFolderPath
+)
 
 
