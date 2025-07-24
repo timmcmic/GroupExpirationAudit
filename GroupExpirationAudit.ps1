@@ -203,26 +203,19 @@ Function Validate-GraphInfo
         out-logfile -string "No appID, certThumbprint, or clientSecret provided - set type interactive auth."
         $functionConnectionType = $functionConnectionTypeInteractive
     }
-    elseif ($msGraphCertificateThumbprint -ne "")
+    elseif (($msGraphCertificateThumbprint -ne "") -and ($msGraphClientSecret -ne ""))
     {
-        out-logfile -string "Certificate thumbprint specified - validate application ID."
-
-        if ($msGraphApplicationID -ne "")
-        {
-            out-logfile -string "Certificate thumbprint specified - applicationID specified - set type certificate auth."
-
-            $functionConnectionType = $functionConnectionTypeCertificate
-        }
-        else 
-        {
-            out-logfile -string "Certificate authentication requires both a certificate thumbprint and application ID."
-            out-logfile -string "Specify both to proceed."
-            out-logfile -string "Invalid graph connection type specified." -isError:$true
-        }
+        out-logfile -string "Specifying a certificate thumbprint and client secret is not allowed - specify one authentication method." -isError:$true
     }
-    elseif ($msGraphApplicationID -eq "")
+    elseif ($msGraphClientSecret -ne "")
     {
-        out-logfile -string "Application ID specified - validate certificate thumbprint."
+        out-logfile -string "Client secret specified - set type client secret auth."
+
+        $functionConnectionType = $functionConnectionTypeSecret
+    }
+    elseif ($msGraphApplicationID -ne "")
+    {
+        out-logfile -string "Application ID specified - check certificate thumbprint."
 
         if ($msGraphCertificateThumbprint -ne "")
         {
@@ -232,22 +225,114 @@ Function Validate-GraphInfo
         }
         else 
         {
-            out-logfile -string "Certificate authentication requires both a certificate thumbprint and application ID."
-            out-logfile -string "Specify both to proceed."
-            out-logfile -string "Invalid graph connection type specified." -isError:$true
+            out-logfile -string "Specifying a graph application ID requires a certificate thumbprint - specify a certificate thumbprint." -isError:$TRUE
         }
     }
-    elseif ($msGraphClientSecret -ne "")
+    elseif ($msGraphCertificateThumbprint -ne "")
     {
-        out-logfile -string "Client secret specified - set type client secret auth."
-        $functionConnectionType = $functionConnectionTypeSecret
+        out-logfile -string "Certificate thumbprint specified - check application ID."
+
+        if ($msGraphApplicationID -ne "")
+        {
+            out-logfile -string "Application ID specified - certificate thumbprint specified - set type certificate auth."
+
+            $functionConnectionType = $functionConnectionTypeCertificate
+        }
+        else 
+        {
+            out-logfile -string "Specifying a certificate thumbprint requires a graph application ID - specify a graph application ID." -isError:$TRUE
+        }
     }
+    else 
+    {
+        out-logfile -string "Graph authentication type could not be determined - this is not good - you should not have gotten here." -isError:$true
+    }
+
+    out-logfile -string "Exit Validate-GraphInfo"
 
     return $functionConnectionType
 }
 
+#*****************************************************
+Function Connect-MicrosoftGraph 
+{
+    [cmdletbinding()]
 
+    Param
+    (
+        [string]$msGraphEnvironmentName,
+        [Parameter(Mandatory=$true)]
+        [string]$msGraphTenantID,
+        [Parameter(Mandatory=$true)]
+        [AllowEmptyString()]
+        [string]$msGraphApplicationID,
+        [Parameter(Mandatory=$true)]
+        [AllowEmptyString()]
+        [string]$msGraphCertificateThumbprint,
+        [Parameter(Mandatory=$true)]
+        [AllowEmptyString()]
+        [string]$msGraphClientSecret,
+        [Parameter(Mandatory=$true)]
+        [string]$graphAuthenticationType
+    )
 
+    out-logfile -string "Entering Connect-MicrosoftGraph"
+
+    $functionConnectionTypeInteractive = "Interactive"
+    $functionConnectionTypeCertificate = "CertAuth"
+    $functionConnectionTypeSecret = "ClientSecret"
+
+    if ($graphAuthenticationType -eq $functionConnectionTypeInteractive)
+    {
+        out-logfile -string "Interactive Authentication"
+
+        try {
+            connect-mgGraph -TenantId $msGraphTenantID -environment $msGraphEnvironmentName -errorAction Stop
+
+            out-logfile -string "Interactive authentication to Microosft Graph successful."
+        }
+        catch {
+            out-logfile -string "Interactive authentication to Microsoft Graph FAILED."
+            out-logfile -string $_ -isError:$true
+        }
+    }
+    elseif ($graphAuthenticationType -eq $functionConnectionTypeCertificate)
+    {
+        out-logfile -string "Certificate Authentication"
+
+        try {
+            connect-mgGraph -TenantId $msGraphTenantID -Environment $msGraphEnvironmentName -ClientId $msGraphApplicationID -CertificateThumbprint $msGraphCertificateThumbprint -errorAction Stop
+
+            out-logfile -string "Certificate authentication to Microsoft Graph successful."
+        }
+        catch {
+            out-logfile -string "Certificate authentication to Microsoft Graph FAILED."
+            out-logfile -string $_ -isError:$TRUE
+        }
+    }
+    elseif ($graphAuthenticationType -eq $functionConnectionTypeSecret)
+    {
+        out-logfile -string "Client Secret Authentication"
+
+        $securedPasswordPassword = convertTo-SecureString -string $msGraphClientSecret -AsPlainText -Force
+
+        $clientSecretCredential = new-object -typeName System.Management.Automation.PSCredential -argumentList $msGraphApplicationID,$securedPasswordPassword
+
+        try {
+            Connect-MgGraph -tenantID $msGraphTenantID -environment $msGraphEnvironmentName -ClientSecretCredential $clientSecretCredential -errorAction Stop
+
+            out-logfile -string "Client secret authentication to Microsoft Graph successful."
+        }
+        catch {
+            out-logfile -string "Client secret authentication to Microsoft Graph FAILED."
+            out-logfile -string $_ -isError:$TRUE
+        }
+    }
+    else 
+    {
+        out-logfile -string "This is bad - you should not have been able to end up here." -isError:$TRUE
+    }
+}
 
 #*****************************************************
 #*****************************************************
@@ -269,13 +354,10 @@ out-logfile -string "Starting GroupExpirationAudit"
 
 out-logfile -string "Validating graph parameters provided"
 
-try {
-    $graphConnectionType = Validate-GraphInfo -msGraphApplicationID $msGraphApplicationID -msGraphCertificateThumbprint $msGraphCertificateThumbprint -msGraphClientSecret $msGraphClientSecret -errorAction STOP
-}
-catch {
-    out-logfile -string "ERROR"
-    out-logfile -string $_ -isError:$true
-}
-
+$graphConnectionType = Validate-GraphInfo -msGraphApplicationID $msGraphApplicationID -msGraphCertificateThumbprint $msGraphCertificateThumbprint -msGraphClientSecret $msGraphClientSecret -errorAction STOP
 
 out-logfile -string ("Graph authentication type: "+$graphConnectionType)
+
+out-logfile -string "Initiating connection to Microsoft Graph."
+
+Connect-MicrosoftGraph -msGraphEnvironmentName $msGraphEnvironmentName -msGraphTenantID $msGraphTenantID -msGraphApplicationID $msGraphApplicationID -msGraphCertificateThumbprint $msGraphCertificateThumbprint -msGraphClientSecret $msGraphClientSecret -graphAuthenticationType $graphConnectionType -errorAction STOP
