@@ -55,10 +55,227 @@ Param(
         [Parameter(Mandatory=$false)]
         [string]$msGraphCertificateThumbprint="",
         [Parameter(Mandatory=$false)]
-        [string]$msGraphClientSecret,
+        [string]$msGraphClientSecret="",
         #Define other mandatory parameters
         [Parameter(Mandatory = $true)]
         [string]$logFolderPath
 )
 
+#*****************************************************
+Function new-LogFile
+{
+    [cmdletbinding()]
 
+    Param
+    (
+        [Parameter(Mandatory = $true)]
+        [string]$logFileName,
+        [Parameter(Mandatory = $true)]
+        [string]$logFolderPath
+    )
+
+    [string]$logFileSuffix=".log"
+    [string]$fileName=$logFileName+$logFileSuffix
+
+    # Get our log file path
+
+    $logFolderPath = $logFolderPath+"\"+$logFileName+"\"
+    
+    #Since $logFile is defined in the calling function - this sets the log file name for the entire script
+    
+    $global:LogFile = Join-path $logFolderPath $fileName
+
+    #Test the path to see if this exists if not create.
+
+    [boolean]$pathExists = Test-Path -Path $logFolderPath
+
+    if ($pathExists -eq $false)
+    {
+        try 
+        {
+            #Path did not exist - Creating
+
+            New-Item -Path $logFolderPath -Type Directory
+        }
+        catch 
+        {
+            throw $_
+        } 
+    }
+}
+
+#*****************************************************
+Function Out-LogFile
+{
+    [cmdletbinding()]
+
+    Param
+    (
+        [Parameter(Mandatory = $true)]
+        $String,
+        [Parameter(Mandatory = $false)]
+        [boolean]$isError=$FALSE
+    )
+
+    # Get the current date
+
+    [string]$date = Get-Date -Format G
+
+    # Build output string
+    #In this case since I abuse the function to write data to screen and record it in log file
+    #If the input is not a string type do not time it just throw it to the log.
+
+    if ($string.gettype().name -eq "String")
+    {
+        [string]$logstring = ( "[" + $date + "] - " + $string)
+    }
+    else 
+    {
+        $logString = $String
+    }
+
+    # Write everything to our log file and the screen
+
+    $logstring | Out-File -FilePath $global:LogFile -Append
+
+    #Write to the screen the information passed to the log.
+
+    if ($string.gettype().name -eq "String")
+    {
+        Write-Host $logString
+    }
+    else 
+    {
+        write-host $logString | select-object -expandProperty *
+    }
+
+    #If the output to the log is terminating exception - throw the same string.
+
+    if ($isError -eq $TRUE)
+    {
+        #Ok - so here's the deal.
+        #By default error action is continue.  IN all my function calls I use STOP for the most part.
+        #In this case if we hit this error code - one of two things happen.
+        #If the call is from another function that is not in a do while - the error is logged and we continue with exiting.
+        #If the call is from a function in a do while - write-error rethrows the exception.  The exception is caught by the caller where a retry occurs.
+        #This is how we end up logging an error then looping back around.
+
+        if ($global:GraphConnection -eq $TRUE)
+        {
+            Disconnect-MGGraph
+        }
+
+        write-error $logString
+
+        exit
+    }
+}
+
+#*****************************************************
+Function Validate-GraphInfo
+{
+    [cmdletbinding()]
+
+    Param
+    (
+        [Parameter(Mandatory=$true)]
+        [AllowEmptyString()]
+        [string]$msGraphApplicationID,
+        [Parameter(Mandatory=$true)]
+        [AllowEmptyString()]
+        [string]$msGraphCertificateThumbprint,
+        [Parameter(Mandatory=$true)]
+        [AllowEmptyString()]
+        [string]$msGraphClientSecret
+    )
+
+    $functionConnectionType = ""
+    $functionConnectionTypeInteractive = "Interactive"
+    $functionConnectionTypeCertificate = "CertAuth"
+    $functionConnectionTypeSecret = "ClientSecret"
+
+    out-logfile -string "Entering Validate-GraphInfo"
+
+    out-logfile -string "Testing parameters to determine graph authentication type."
+
+    if (($msGraphApplicationID -eq "") -and ($msGraphCertificateThumbprint -eq "") -and ($msGraphClientSecret -eq ""))
+    {
+        out-logfile -string "No appID, certThumbprint, or clientSecret provided - set type interactive auth."
+        $functionConnectionType = $functionConnectionTypeInteractive
+    }
+    elseif ($msGraphCertificateThumbprint -ne "")
+    {
+        out-logfile -string "Certificate thumbprint specified - validate application ID."
+
+        if ($msGraphApplicationID -ne "")
+        {
+            out-logfile -string "Certificate thumbprint specified - applicationID specified - set type certificate auth."
+
+            $functionConnectionType = $functionConnectionTypeCertificate
+        }
+        else 
+        {
+            out-logfile -string "Certificate authentication requires both a certificate thumbprint and application ID."
+            out-logfile -string "Specify both to proceed."
+            out-logfile -string "Invalid graph connection type specified." -isError:$true
+        }
+    }
+    elseif ($msGraphApplicationID -eq "")
+    {
+        out-logfile -string "Application ID specified - validate certificate thumbprint."
+
+        if ($msGraphCertificateThumbprint -ne "")
+        {
+            out-logfile -string "Application ID specified - certificate thumbprint specified - set type certificate auth."
+
+            $functionConnectionType = $functionConnectionTypeCertificate
+        }
+        else 
+        {
+            out-logfile -string "Certificate authentication requires both a certificate thumbprint and application ID."
+            out-logfile -string "Specify both to proceed."
+            out-logfile -string "Invalid graph connection type specified." -isError:$true
+        }
+    }
+    elseif ($msGraphClientSecret -ne "")
+    {
+        out-logfile -string "Client secret specified - set type client secret auth."
+        $functionConnectionType = $functionConnectionTypeSecret
+    }
+
+    return $functionConnectionType
+}
+
+
+
+
+#*****************************************************
+#*****************************************************
+
+#Start main function
+
+#*****************************************************
+#*****************************************************
+
+#Declare variables
+
+[string]$logFileName = "GroupExpirationAudit"
+[string]$graphConnectionType = ""
+[string]$backSlash = "\"
+
+new-LogFile -logFileName $logFileName -logFolderPath $logFolderPath
+
+out-logfile -string "Starting GroupExpirationAudit"
+
+out-logfile -string "Validating graph parameters provided"
+
+try {
+    $graphConnectionType = Validate-GraphInfo -msGraphApplicationID $msGraphApplicationID -msGraphCertificateThumbprint $msGraphCertificateThumbprint -msGraphClientSecret $msGraphClientSecret -errorAction STOP
+}
+catch {
+    out-logfile -string "ERROR"
+    out-logfile -string $_ -isError:$true
+}
+
+
+out-logfile -string ("Graph authentication type: "+$graphConnectionType)
