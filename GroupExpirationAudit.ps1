@@ -58,7 +58,9 @@ Param(
         [string]$msGraphClientSecret="",
         #Define other mandatory parameters
         [Parameter(Mandatory = $true)]
-        [string]$logFolderPath
+        [string]$logFolderPath,
+        [Parameter(Mandatory = $false)]
+        [boolean]$includePolicyEvaluation=$TRUE
 )
 
 #*****************************************************
@@ -375,6 +377,306 @@ Function Validate-GraphScopes
 
         out-logfile -string "ERROR: Correct graph scopes!"
     }
+
+    out-logfile -string 'Exiting Validate-GraphScopes'
+}
+
+#*****************************************************
+Function Get-M365Groups 
+{
+    out-logfile -string "Entering Get-M365Groups"
+
+    #Declare variables.
+
+    $groupReturn = $null
+    $groupType = "Unified"
+
+    out-logfile -string "Obtaining all M365 / Unified Groups by Filter"
+
+    try {
+        $groupReturn = Get-MgGroup -Filter "groupTypes/any(c:c eq '$groupType')" -All -PageSize 500 -ConsistencyLevel Eventual -Property DisplayName, ID, CreatedDateTime, RenewedDateTime, ExpirationDateTime
+    }
+    catch {
+        out-logfile $_ -isError:$true
+    }
+
+    out-logfile -string 'Exiting Get-M365Group'
+
+    return $groupReturn
+}
+
+#*****************************************************
+Function Calculate-GroupExpiration
+{
+    #Give credit where credit is due.
+    #Code largely adapted from https://office365itpros.com/2022/02/09/microsoft-groups-expiration-policy/
+    #Code modified to account for groups that may not have a renewal date or expiration date.
+
+    Param
+    (
+        [Parameter(Mandatory=$true)]
+        $groupsToEvaluate
+    )
+
+    out-logfile -string "Entering Calculate-GroupExpiration"
+
+    #Declare variables.
+
+    $functionGroups = [System.Collections.Generic.List[Object]]::new()
+    $today = (Get-Date)
+
+    foreach ($group in $groupsToEvaluate)
+    {
+        out-logfile -string ("Evaluting group: "+$group.DisplayName)
+        out-logfile -string ("Evaluating group id: "+$group.id)
+
+        $Days = (New-TimeSpan -Start $group.CreatedDateTime -End $Today).Days  # Age of group
+        $createdOn = Get-Date($group.CreatedDateTime) -format 'dd-MMM-yyyy HH:mm'
+
+        out-logfile -string ("Age of group in days: "+$Days)
+        out-logfile -string ("Group created on: "+$createdOn)
+
+        if ($group.ExpirationDateTime -ne $null)
+        {
+            out-logfile -string "Group has expiration date - evaluate."
+
+            $DaysLeft = (New-TimeSpan -Start $Today -End $group.ExpirationDateTime).Days
+            $nextRenewal = Get-Date($group.ExpirationDateTime) -format 'dd-MMM-yyyy'
+        }
+        else 
+        {
+            $DaysLeft = "N/A"
+            $nextRenewal = "N/A"
+        }
+
+        out-logfile -string ("Days till group expiration: "+$DaysLeft)
+        out-logfile -string ("Expiration Date: "+$nextRenewal)
+
+        if ($group.RenewedDateTime -ne $null)
+        {
+            out-logfile -string "Group has last renewed date - evaluate."
+
+            $lastRenewal = Get-Date($group.RenewedDateTime) -format 'dd-MMM-yyyy'
+        }
+        else 
+        {
+            $lastRenewal = "N/A"
+        }
+
+        out-logfile -string ("Last Renewed Date: "+$lastRenewal)
+
+        $ReportLine = [PSCustomObject]@{
+            Group                   = $group.DisplayName
+            GroupID                 = $group.id
+            Created                 = $createdOn
+            "Age in days"            = $Days
+            "Last Renewed"           = $lastRenewal
+            "Next Renewal"           = $nextRenewal
+            "Days Before Expiration" = $DaysLeft
+            "Group Expiration Policy ID" = ""}
+
+      $functionGroups.Add($ReportLine)
+    }
+
+    out-logfile -string 'Exiting Calculate-GroupExpiration'
+
+    return $functionGroups
+}
+
+#*****************************************************
+Function Calculate-ExpirationPolicy
+{
+    Param
+    (
+        [Parameter(Mandatory=$true)]
+        $groupsToEvaluate,
+        [Parameter(Mandatory=$true)]
+        $groupsExpirationPolicy
+    )
+
+    $groupExpirationPolicySelected = "Selected"
+
+    out-logfile -string "Entering Calculate-ExpirationPolicy"
+
+    foreach ($group in $groupsToEvaluate)
+    {
+        out-logfile -string ("Evaluting group: "+$group.group)
+        out-logfile -string ("Evaluating group id: "+$group.groupID)
+        
+        if ($groupsExpirationPolicy.ManagedGroupTypes -eq $groupExpirationPolicySelected)
+        {
+            out-logfile -string "Group expiration policy is scoped to selected groups - evaluate group."
+            $id = $group.groupID
+            $uri = "https://graph.microsoft.com/v1.0/groups/$id/groupLifecyclePolicies"
+
+            out-logfile -string $uri
+
+            try {
+                $policy = Invoke-MgGraphRequest -Method "Get" -Uri $uri -ErrorAction Stop
+
+                if ($policy.value.id -ne $NULL)
+                {
+                    out-logfile -string ("Group has expiration policy id: "+$policy.value.id)
+                    $group.'Group Expiration Policy ID' = $policy.value.id
+                }
+                else 
+                {
+                    out-logfile -string ("Group does not have expiration policy id.")
+                    $group.'Group Expiration Policy ID' = "None"
+                }
+            }
+            catch {
+                $group.'Group Expiration Policy ID' = "None"
+            }
+        }
+        else 
+        {
+            out-logfile -string "Group expiration policy applies to all groups - update ID."
+            $group.'Group Expiration Policy ID' = $groupExpirationPolicy.id
+        }
+
+        out-logfile -string $group
+    }
+
+    out-logfile -string 'Exiting Calculate-ExpirationPolicy'
+
+    return $groupsToEvaluate
+}
+
+#*****************************************************
+Function Get-GroupExpirationPolicy
+{
+    out-logfile -string "Entering Get-GroupExpirationPolicy"
+
+    try {
+        $functionPolicy = Get-MgGroupLifecyclePolicy -errorAction STOP
+
+        out-logfile -string 'Successfully obtained lifecycle policy.'
+        out-logfile -string $functionPolicy
+    }
+    catch {
+        out-logfile -string 'Unable to obtain group lifecycle policy.'
+        out-logfile -string $_ -isError:$true
+    }
+
+    out-logfile -string 'Exiting Get-GroupExpirationPolicy'
+
+    return $functionPolicy
+}
+
+#*****************************************************
+Function WriteXMLFile
+{
+    [cmdletbinding()]
+
+    Param
+    (
+        [Parameter(Mandatory = $true)]
+        $outputFile,
+        [Parameter(Mandatory = $true)]
+        $data
+    )
+
+    out-logfile -string "Entering WriteXMLFile"
+
+    try
+    {
+        out-logfile -string "Writing outout to xml file."
+
+        $data | export-cliXML -path $outputFile -errorAction STOP
+    }
+    catch
+    {
+        out-logfile -string $_
+        out-logfile -string "Unable to write data to XML file." -isError:$TRUE
+    }
+    
+        out-logfile -string "Exiting WriteXMLFile"
+}
+
+#*****************************************************
+Function WriteCSVFile
+{
+    [cmdletbinding()]
+
+    Param
+    (
+        [Parameter(Mandatory = $true)]
+        $outputFile,
+        [Parameter(Mandatory = $true)]
+        $data
+    )
+
+    out-logfile -string "Entering WriteCSVFile"
+
+    try
+    {
+        out-logfile -string "Writing outout to csv file."
+
+        $data | Export-Csv -path $outputFile -errorAction STOP
+    }
+    catch
+    {
+        out-logfile -string $_
+        out-logfile -string "Unable to write data to CSV file." -isError:$TRUE
+    }
+
+    out-logfile -string "Exiting WriteCSVFile"
+}
+
+#*****************************************************
+Function Generate-HTMLFile
+{
+    [cmdletbinding()]
+
+    Param
+    (
+        [Parameter(Mandatory = $true)]
+        $groupsOutput,
+        [Parameter(Mandatory = $true)]
+        $expirationSettings
+    )
+
+    out-logfile -string "Entering Generate-HTMLData"
+
+    $functionHTMLSuffix = "HTML"
+    $functionLogSuffix = "log"
+    $functionHTMLFile = $global:LogFile.replace("$functionLogSuffix","$functionHTMLSuffix")
+    $headerString = "Group Expiration Audit"
+
+    $groupPolicyCount = ($groupsOutput | where {($_.'Group Expiration Policy ID' -ne "") -and ($_.'Group Expiration Policy ID' -ne "None")}).count
+    $noGroupPolicyCount = ($groupsOutput | where {($_.'Group Expiration Policy ID' -eq "None")}).count
+    $notEvaluatedCount = ($groupsOutput | where {($_.'Group Expiration Policy ID' -eq "")}).count
+    $totalGroupsEvaluated = $groupsOutput.count
+
+    new-HTML -TitleText $headerString -FilePath $functionHTMLFile {
+        New-HTMLHeader {
+            New-HTMLText -Text $headerString -FontSize 24 -Color White -BackGroundColor Black -Alignment center
+        }
+        new-htmlMain{
+            New-HTMLTableOption -DataStore JavaScript
+
+            New-htmlSection -HeaderText ("Group Expiration Information"){
+                new-htmlTable -DataTable ($groupsOutput | Select-Object Group,GroupID,Created,'Age In Days','Last Renewed','Next Renewal','Days Before Expiration','Group Expiration Policy ID') -Filtering {
+                } -AutoSize
+            } -HeaderTextAlignment "Left" -HeaderTextSize "16" -HeaderTextColor "White" -HeaderBackGroundColor "Black"  -CanCollapse -BorderRadius 10px -collapsed
+
+            New-htmlSection -HeaderText ("Group Expiration Policy Information"){
+                new-htmlTable -DataTable ($expirationSettings | select-object ID,GroupLifeTimeInDays,AlternateNotificationEmails,ManagedGroupTypes) -Filtering {
+                } -AutoSize
+            } -HeaderTextAlignment "Left" -HeaderTextSize "16" -HeaderTextColor "White" -HeaderBackGroundColor "Black"  -CanCollapse -BorderRadius 10px -collapsed
+            New-HTMLSection -HeaderText "Group Evaluation Summary" {
+                new-htmlList{
+                    new-htmlListItem -text ("Groups with Policy ID: "+$groupPolicyCount) -FontSize 14
+                    new-htmlListItem -text ("Groups without Policy ID: "+$noGroupPolicyCount) -FontSize 14
+                    new-htmlListItem -text ("Groups not evaluated for PolicyID: "+$notEvaluatedCount) -FontSize 14
+                    new-htmlListItem -text ("Total Groups Evaluated: "+$totalGroupsEvaluated) -FontSize 14
+                }
+            }-HeaderTextAlignment "Left" -HeaderTextSize "16" -HeaderTextColor "White" -HeaderBackGroundColor "Black"  -CanCollapse -BorderRadius 10px -collapsed
+        }
+    } -online -ShowHTML
+
+    out-logfile -string "Exiting Generate-HTMLData"
 }
 
 #*****************************************************
@@ -390,8 +692,20 @@ Function Validate-GraphScopes
 [string]$logFileName = "GroupExpirationAudit"
 [string]$graphConnectionType = ""
 [string]$backSlash = "\"
+$groupsToEvaluate = $null
+
+$groupsOutput=[System.Collections.Generic.List[Object]]::new()
+$groupExpirationPolicy = $null
+[string]$logFileNameFull = $logFileName +".log"
+[string]$m365GroupsXML = "Groups.xml"
+[string]$m365GroupsInfo = "GroupsExpirationReport.csv"
+[string]$m365GroupsPolicy = "GroupsPolicyInfo.xml"
 
 new-LogFile -logFileName $logFileName -logFolderPath $logFolderPath
+
+$outputM365Groups = $global:LogFile.replace($logFileNameFull,$m365GroupsXML)
+$outputM365GroupsInfo = $global:LogFile.replace($logFileNameFull,$m365GroupsInfo)
+$outputM365GroupsPolicy = $global:LogFile.replace($logFileNameFull,$m365GroupsPolicy)
 
 out-logfile -string "Starting GroupExpirationAudit"
 
@@ -408,3 +722,42 @@ Connect-MicrosoftGraph -msGraphEnvironmentName $msGraphEnvironmentName -msGraphT
 out-logfile -string "Validating necessary graph scopes post connection."
 
 Validate-GraphScopes
+
+out-logfile -string "Obtain all M365 or Unified Group types for evaluation."
+
+$groupsToEvaluate = Get-M365Groups
+
+$groupExpirationPolicy = Get-GroupExpirationPolicy
+
+WriteXMLFile -outputFile $outputM365GroupsPolicy -data $groupExpirationPolicy
+
+if ($groupsToEvaluate.count -gt 0)
+{
+    out-logfile -string "M365 groups were located in Entra ID - proceed with evaluation."
+
+    out-logfile -string "Calculate group expiration information and create objects."
+
+    WriteXMLFile -outputFile $outputM365Groups -data $groupsToEvaluate
+
+    $groupsOutput = Calculate-GroupExpiration -groupsToEvaluate $groupsToEvaluate
+
+    if ($includePolicyEvaluation -eq $TRUE)
+    {
+        out-logfile -string "Policy evaluation is included."
+
+        $groupsOutput = Calculate-ExpirationPolicy -groupsToEvaluate $groupsOutput -groupsExpirationPolicy $groupExpirationPolicy
+    }
+    else 
+    {
+        out-logfile -string "Policy evaluation was not included."
+    }
+
+
+    WriteCSVFile -outputFile $outputM365GroupsInfo -data $groupsOutput
+
+    Generate-HTMLFile -groupsoutput $groupsOutput -expirationSettings $groupExpirationPolicy
+}
+else 
+{
+    out-logfile -string "M365 groups were not located in Entra ID - no further work to do."
+}
