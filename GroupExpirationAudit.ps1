@@ -393,7 +393,7 @@ Function Get-M365Groups
     out-logfile -string "Obtaining all M365 / Unified Groups by Filter"
 
     try {
-        $groupReturn = Get-MgGroup -Filter "groupTypes/any(c:c eq '$groupType')" -All -PageSize 500 -ConsistencyLevel Eventual -Property DisplayName, ID, CreatedDateTime, RenewedDateTime, ExpirationDateTime -errorAction STOP
+        $groupReturn = Get-MgGroup -Filter "groupTypes/any(c:c eq '$groupType')" -All -PageSize 500 -ConsistencyLevel Eventual -Property DisplayName, ID, CreatedDateTime, RenewedDateTime, ExpirationDateTime
     }
     catch {
         out-logfile $_ -isError:$true
@@ -412,11 +412,12 @@ Function Get-M365GroupsDeleted
     #Declare variables.
 
     $groupReturn = $null
+    $groupType = "Unified"
 
-    out-logfile -string "Obtaining all M365 / Unified Groups by Filter"
+    out-logfile -string "Obtaining all M365 Deleted Groups"
 
     try {
-        $groupReturn = Get-MgDirectoryDeletedItemAsGroup -All -PageSize 500 -ConsistencyLevel Eventual -Property DisplayName, ID, CreatedDateTime, RenewedDateTime, ExpirationDateTime -errorAction STOP
+        $groupReturn = Get-MgDirectoryDeletedItemAsGroup -All -PageSize 500 -Property DisplayName, ID, CreatedDateTime, RenewedDateTime, ExpirationDateTime
     }
     catch {
         out-logfile $_ -isError:$true
@@ -439,8 +440,6 @@ Function Calculate-GroupExpiration
         [Parameter(Mandatory=$true)]
         $groupsToEvaluate,
         [Parameter(Mandatory=$true)]
-        $ReportLine,
-        [Parameter(Mandatory=$true)]
         $isDeleted
     )
 
@@ -450,8 +449,8 @@ Function Calculate-GroupExpiration
 
     $functionGroups = [System.Collections.Generic.List[Object]]::new()
     $today = (Get-Date)
-    $no = "No"
-    $yes = "Yes"
+    $functionNo = "No"
+    $functionYes = "Yes"
 
     foreach ($group in $groupsToEvaluate)
     {
@@ -493,21 +492,37 @@ Function Calculate-GroupExpiration
 
         out-logfile -string ("Last Renewed Date: "+$lastRenewal)
 
-        if ($isDeleted -eq $no)
+        if ($isDeleted -eq $functionNo)
         {
-            $reportLine.Group = $group.DisplayName
-            $reportLine.ID = $group.ID:
-            $reportLine.Created = $createdOn
-            $reportLine.'Age in Days' = $Days
-            $reportLine.'Last Renewed' = $lastRenewal
-            $reportLine.'Next Renewal' = $nextRenewal
-            $reportLine.'Days Before Expiration' = $DaysLeft
-            $reportLine.'Groups Expiration Policy ID' = ""
+            $ReportLine = [PSCustomObject]@{
+            Group                   = $group.DisplayName
+            GroupID                 = $group.id
+            Created                 = $createdOn
+            "Age in days"            = $Days
+            "Last Renewed"           = $lastRenewal
+            "Next Renewal"           = $nextRenewal
+            "Days Before Expiration" = $DaysLeft
+            "Group Expiration Policy ID" = ""
+            IsDeleted = $functionNo}
         }
-        elseif ($isDeleted -eq $Yes)
+        elseif ($isDeleted -eq $functionYes)
         {
-
+            $ReportLine = [PSCustomObject]@{
+            Group                   = $group.DisplayName
+            GroupID                 = $group.id
+            Created                 = $createdOn
+            "Age in days"            = $Days
+            "Last Renewed"           = $lastRenewal
+            "Next Renewal"           = $nextRenewal
+            "Days Before Expiration" = $DaysLeft
+            "Group Expiration Policy ID" = ""
+            IsDeleted = $functionYes}
         }
+        else 
+        {
+            out-logfile -string "You should not have ended up here." -isError:$true
+        }
+        
 
       $functionGroups.Add($ReportLine)
     }
@@ -668,20 +683,40 @@ Function Generate-HTMLFile
         [Parameter(Mandatory = $true)]
         $groupsOutput,
         [Parameter(Mandatory = $true)]
-        $expirationSettings
+        $expirationSettings,
+        [Parameter(Mandatory = $true)]
+        [boolean]$evaluatePolicy
     )
 
     out-logfile -string "Entering Generate-HTMLData"
 
+    $no = "No"
+    $yes = "Yes"
     $functionHTMLSuffix = "HTML"
     $functionLogSuffix = "log"
     $functionHTMLFile = $global:LogFile.replace("$functionLogSuffix","$functionHTMLSuffix")
     $headerString = "Group Expiration Audit"
 
-    $groupPolicyCount = ($groupsOutput | where {($_.'Group Expiration Policy ID' -ne "") -and ($_.'Group Expiration Policy ID' -ne "None")}).count
-    $noGroupPolicyCount = ($groupsOutput | where {($_.'Group Expiration Policy ID' -eq "None")}).count
-    $notEvaluatedCount = ($groupsOutput | where {($_.'Group Expiration Policy ID' -eq "")}).count
+    $totalActiveGroupsEvaluated = ($groupsOutput | where {$_.isDeleted -eq $No}).count
+    $totalDeletedGroupsEvaluated = ($groupsOutput | where {$_.isDeleted -eq $Yes}).count
     $totalGroupsEvaluated = $groupsOutput.count
+
+    if ($evaluatePolicy -eq $TRUE)
+    {
+        $groupPolicyCount = ($groupsOutput | where {($_.'Group Expiration Policy ID' -ne "") -and ($_.'Group Expiration Policy ID' -ne "None")}).count
+        $activePolicyCount = ($groupsOutput | where {($_.'Group Expiration Policy ID' -ne "") -and ($_.'Group Expiration Policy ID' -ne "None") -and ($_.isDeleted -eq $no)}).count
+        $deletedPolicyCount = ($groupsOutput | where {($_.'Group Expiration Policy ID' -ne "") -and ($_.'Group Expiration Policy ID' -ne "None") -and ($_.isDeleted -eq $yes)}).count
+        $noGroupPolicyCount = ($groupsOutput | where {($_.'Group Expiration Policy ID' -eq "None")}).count
+        $notEvaluatedCount = "N/A"
+    }
+    else
+    {
+        $groupPolicyCount = "N/A"
+        $activePolicyCount = "N/A"
+        $deletedPolicyCount = "N/A"
+        $noGroupPolicyCount = "N/A"
+        $notEvaluatedCount = ($groupsOutput | where {($_.'Group Expiration Policy ID' -eq "")}).count  
+    }
 
     new-HTML -TitleText $headerString -FilePath $functionHTMLFile {
         New-HTMLHeader {
@@ -691,7 +726,7 @@ Function Generate-HTMLFile
             New-HTMLTableOption -DataStore JavaScript
 
             New-htmlSection -HeaderText ("Group Expiration Information"){
-                new-htmlTable -DataTable ($groupsOutput | Select-Object Group,GroupID,Created,'Age In Days','Last Renewed','Next Renewal','Days Before Expiration','Group Expiration Policy ID') -Filtering {
+                new-htmlTable -DataTable ($groupsOutput | Select-Object Group,GroupID,Created,'Age In Days','Last Renewed','Next Renewal','Days Before Expiration','Group Expiration Policy ID','IsDeleted') -Filtering {
                 } -AutoSize
             } -HeaderTextAlignment "Left" -HeaderTextSize "16" -HeaderTextColor "White" -HeaderBackGroundColor "Black"  -CanCollapse -BorderRadius 10px -collapsed
 
@@ -701,10 +736,19 @@ Function Generate-HTMLFile
             } -HeaderTextAlignment "Left" -HeaderTextSize "16" -HeaderTextColor "White" -HeaderBackGroundColor "Black"  -CanCollapse -BorderRadius 10px -collapsed
             New-HTMLSection -HeaderText "Group Evaluation Summary" {
                 new-htmlList{
-                    new-htmlListItem -text ("Groups with Policy ID: "+$groupPolicyCount) -FontSize 14
-                    new-htmlListItem -text ("Groups without Policy ID: "+$noGroupPolicyCount) -FontSize 14
-                    new-htmlListItem -text ("Groups not evaluated for PolicyID: "+$notEvaluatedCount) -FontSize 14
+                    new-htmlListItem -text ("Groups With Policy ID: "+$groupPolicyCount) -FontSize 14
+                    new-htmlList{
+                        new-htmlListItem -text ("Active Groups With Policy ID: "+$activePolicyCount) -FontSize 14
+                        new-htmlListItem -text ("Deleted Groups With Policy ID: "+$deletedPolicyCount) -FontSize 14
+                    }
+                    new-htmlListItem -text ("Groups Without Policy ID: "+$noGroupPolicyCount) -FontSize 14
+                    new-htmlListItem -text ("Groups Not Evaluated For PolicyID: "+$notEvaluatedCount) -FontSize 14
+
                     new-htmlListItem -text ("Total Groups Evaluated: "+$totalGroupsEvaluated) -FontSize 14
+                    New-HTMLList{
+                        new-htmlListItem -text ("Total Active Groups Evaluated: "+$totalActiveGroupsEvaluated) -FontSize 14
+                        new-htmlListItem -text ("Total Deleted Groups Evaluated: "+$totalDeletedGroupsEvaluated) -FontSize 14
+                    }
                 }
             }-HeaderTextAlignment "Left" -HeaderTextSize "16" -HeaderTextColor "White" -HeaderBackGroundColor "Black"  -CanCollapse -BorderRadius 10px -collapsed
         }
@@ -723,25 +767,14 @@ Function Generate-HTMLFile
 
 #Declare variables
 
-$ReportLine = [PSCustomObject]@{
-            Group                   = ""
-            GroupID                 = ""
-            Created                 = ""
-            "Age in days"            = ""
-            "Last Renewed"           = ""
-            "Next Renewal"           = ""
-            "Days Before Expiration" = ""
-            "Group Expiration Policy ID" = ""
-            IsDeleted = ""}
-
 [string]$logFileName = "GroupExpirationAudit"
 [string]$graphConnectionType = ""
 [string]$backSlash = "\"
 $groupsToEvaluate = $null
-$groupsToEvaluateDeleted = $NULL
+$groupsToEvaluateDeleted = $null
 
-$no="No"
-$yes="Yes"
+$Yes = "Yes"
+$No = "no"
 
 $groupsOutput=[System.Collections.Generic.List[Object]]::new()
 $groupExpirationPolicy = $null
@@ -778,23 +811,41 @@ out-logfile -string "Obtain all M365 or Unified Group types for evaluation."
 
 $groupsToEvaluate = Get-M365Groups
 
-out-logfile -string "Obtain all groups that are in a soft deleted state."
+out-logfile -string "Obtain all M365 or Unified Group Deleted for evaluation."
 
 $groupsToEvaluateDeleted = Get-M365GroupsDeleted
+
+out-logfile -string "Obtain group expiration policy details."
 
 $groupExpirationPolicy = Get-GroupExpirationPolicy
 
 WriteXMLFile -outputFile $outputM365GroupsPolicy -data $groupExpirationPolicy
 
-if ($groupsToEvaluate.count -gt 0)
+if (($groupsToEvaluate.count -gt 0) -or ($groupsToEvaluateDeleted.count -gt 0))
 {
-    out-logfile -string "M365 groups were located in Entra ID - proceed with evaluation."
+    out-logfile -string "Either active or deleted groups were located - evaluate."
 
-    out-logfile -string "Calculate group expiration information and create objects."
+    if ($groupsToEvaluate.count -gt 0)
+    {
+        out-logfile -string "M365 groups were located in Entra ID - proceed with evaluation."
 
-    WriteXMLFile -outputFile $outputM365Groups -data $groupsToEvaluate
+        out-logfile -string "Calculate group expiration information and create objects."
 
-    $groupsOutput = Calculate-GroupExpiration -groupsToEvaluate $groupsToEvaluate -isDeleted $no -ReportLine $ReportLine
+        WriteXMLFile -outputFile $outputM365Groups -data $groupsToEvaluate
+
+        $groupsOutput += Calculate-GroupExpiration -groupsToEvaluate $groupsToEvaluate -isDeleted $No
+    }
+
+    if ($groupsToEvaluateDeleted.count -gt 0)
+    {
+        out-logfile -string "M365 deleted groups were located in Entra ID - proceed with evaluation."
+
+        out-logfile -string "Calculate group expiration information and create objects."
+
+        WriteXMLFile -outputFile $outputM365GroupsDeleted -data $groupsToEvaluate
+
+        $groupsOutput += Calculate-GroupExpiration -groupsToEvaluate $groupsToEvaluateDeleted -isDeleted $Yes
+    }
 
     if ($includePolicyEvaluation -eq $TRUE)
     {
@@ -806,11 +857,10 @@ if ($groupsToEvaluate.count -gt 0)
     {
         out-logfile -string "Policy evaluation was not included."
     }
-
-
+    
     WriteCSVFile -outputFile $outputM365GroupsInfo -data $groupsOutput
 
-    Generate-HTMLFile -groupsoutput $groupsOutput -expirationSettings $groupExpirationPolicy
+    Generate-HTMLFile -groupsoutput $groupsOutput -expirationSettings $groupExpirationPolicy -evaluatePolicy $includePolicyEvaluation
 }
 else 
 {
