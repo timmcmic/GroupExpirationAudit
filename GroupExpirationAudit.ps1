@@ -405,6 +405,29 @@ Function Get-M365Groups
 }
 
 #*****************************************************
+Function Get-M365GroupsDeleted 
+{
+    out-logfile -string "Entering Get-M365GroupsDeleted"
+
+    #Declare variables.
+
+    $groupReturn = $null
+
+    out-logfile -string "Obtaining all M365 / Unified Groups by Filter"
+
+    try {
+        $groupReturn = Get-MgDirectoryDeletedItemAsGroup -All -PageSize 500 -ConsistencyLevel Eventual -Property DisplayName, ID, CreatedDateTime, RenewedDateTime, ExpirationDateTime -errorAction STOP
+    }
+    catch {
+        out-logfile $_ -isError:$true
+    }
+
+    out-logfile -string 'Exiting Get-M365GroupsDeleted'
+
+    return $groupReturn
+}
+
+#*****************************************************
 Function Calculate-GroupExpiration
 {
     #Give credit where credit is due.
@@ -414,7 +437,11 @@ Function Calculate-GroupExpiration
     Param
     (
         [Parameter(Mandatory=$true)]
-        $groupsToEvaluate
+        $groupsToEvaluate,
+        [Parameter(Mandatory=$true)]
+        $ReportLine,
+        [Parameter(Mandatory=$true)]
+        $isDeleted
     )
 
     out-logfile -string "Entering Calculate-GroupExpiration"
@@ -423,6 +450,8 @@ Function Calculate-GroupExpiration
 
     $functionGroups = [System.Collections.Generic.List[Object]]::new()
     $today = (Get-Date)
+    $no = "No"
+    $yes = "Yes"
 
     foreach ($group in $groupsToEvaluate)
     {
@@ -464,15 +493,21 @@ Function Calculate-GroupExpiration
 
         out-logfile -string ("Last Renewed Date: "+$lastRenewal)
 
-        $ReportLine = [PSCustomObject]@{
-            Group                   = $group.DisplayName
-            GroupID                 = $group.id
-            Created                 = $createdOn
-            "Age in days"            = $Days
-            "Last Renewed"           = $lastRenewal
-            "Next Renewal"           = $nextRenewal
-            "Days Before Expiration" = $DaysLeft
-            "Group Expiration Policy ID" = ""}
+        if ($isDeleted -eq $no)
+        {
+            $reportLine.Group = $group.DisplayName
+            $reportLine.ID = $group.ID:
+            $reportLine.Created = $createdOn
+            $reportLine.'Age in Days' = $Days
+            $reportLine.'Last Renewed' = $lastRenewal
+            $reportLine.'Next Renewal' = $nextRenewal
+            $reportLine.'Days Before Expiration' = $DaysLeft
+            $reportLine.'Groups Expiration Policy ID' = ""
+        }
+        elseif ($isDeleted -eq $Yes)
+        {
+
+        }
 
       $functionGroups.Add($ReportLine)
     }
@@ -688,10 +723,25 @@ Function Generate-HTMLFile
 
 #Declare variables
 
+$ReportLine = [PSCustomObject]@{
+            Group                   = ""
+            GroupID                 = ""
+            Created                 = ""
+            "Age in days"            = ""
+            "Last Renewed"           = ""
+            "Next Renewal"           = ""
+            "Days Before Expiration" = ""
+            "Group Expiration Policy ID" = ""
+            IsDeleted = ""}
+
 [string]$logFileName = "GroupExpirationAudit"
 [string]$graphConnectionType = ""
 [string]$backSlash = "\"
 $groupsToEvaluate = $null
+$groupsToEvaluateDeleted = $NULL
+
+$no="No"
+$yes="Yes"
 
 $groupsOutput=[System.Collections.Generic.List[Object]]::new()
 $groupExpirationPolicy = $null
@@ -699,12 +749,14 @@ $groupExpirationPolicy = $null
 [string]$m365GroupsXML = "Groups.xml"
 [string]$m365GroupsInfo = "GroupsExpirationReport.csv"
 [string]$m365GroupsPolicy = "GroupsPolicyInfo.xml"
+[string]$m365GroupsDeleted = "GroupsDeleted.xml"
 
 new-LogFile -logFileName $logFileName -logFolderPath $logFolderPath
 
 $outputM365Groups = $global:LogFile.replace($logFileNameFull,$m365GroupsXML)
 $outputM365GroupsInfo = $global:LogFile.replace($logFileNameFull,$m365GroupsInfo)
 $outputM365GroupsPolicy = $global:LogFile.replace($logFileNameFull,$m365GroupsPolicy)
+$outputM365GroupsDeleted = $global:LogFile.replace($logFileNameFull,$m365GroupsDeleted)
 
 out-logfile -string "Starting GroupExpirationAudit"
 
@@ -726,6 +778,10 @@ out-logfile -string "Obtain all M365 or Unified Group types for evaluation."
 
 $groupsToEvaluate = Get-M365Groups
 
+out-logfile -string "Obtain all groups that are in a soft deleted state."
+
+$groupsToEvaluateDeleted = Get-M365GroupsDeleted
+
 $groupExpirationPolicy = Get-GroupExpirationPolicy
 
 WriteXMLFile -outputFile $outputM365GroupsPolicy -data $groupExpirationPolicy
@@ -738,7 +794,7 @@ if ($groupsToEvaluate.count -gt 0)
 
     WriteXMLFile -outputFile $outputM365Groups -data $groupsToEvaluate
 
-    $groupsOutput = Calculate-GroupExpiration -groupsToEvaluate $groupsToEvaluate
+    $groupsOutput = Calculate-GroupExpiration -groupsToEvaluate $groupsToEvaluate -isDeleted $no -ReportLine $ReportLine
 
     if ($includePolicyEvaluation -eq $TRUE)
     {
