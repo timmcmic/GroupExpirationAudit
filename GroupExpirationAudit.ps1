@@ -7,9 +7,7 @@
 
 .AUTHOR timmcmic
 
-.COMPANYNAME
-
-Micorosft CSS
+.COMPANYNAME Micorosft CSS
 
 .COPYRIGHT
 
@@ -29,6 +27,7 @@ Micorosft CSS
 
 .RELEASENOTES
 
+.DESCRIPTION "This script allows administators to report on Group Expiration."
 
 .PRIVATEDATA
 
@@ -394,7 +393,7 @@ Function Get-M365Groups
     out-logfile -string "Obtaining all M365 / Unified Groups by Filter"
 
     try {
-        $groupReturn = Get-MgGroup -Filter "groupTypes/any(c:c eq '$groupType')" -All -PageSize 500 -ConsistencyLevel Eventual -Property DisplayName, ID, CreatedDateTime, RenewedDateTime, ExpirationDateTime
+        $groupReturn = Get-MgGroup -Filter "groupTypes/any(c:c eq '$groupType')" -All -PageSize 500 -ConsistencyLevel Eventual -Property DisplayName, ID, CreatedDateTime, RenewedDateTime, ExpirationDateTime -errorAction STOP
     }
     catch {
         out-logfile $_ -isError:$true
